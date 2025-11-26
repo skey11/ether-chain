@@ -1,63 +1,100 @@
-import { ethers } from "ethers";
-import { useMemo, useState } from "react";
+import { JsonRpcProvider, ethers } from "ethers";
+import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import {
+  useAccount,
+  useChainId,
+  useConnect,
+  useDisconnect,
+  useWaitForTransactionReceipt,
+  useWriteContract,
+} from "wagmi";
 
 import "./App.css";
 import { useChainData } from "./hooks/useChainData";
 import { useTransactionDetails } from "./hooks/useTransactionDetails";
-import { formatEth, formatGwei, injectedProvider } from "./lib/ethers";
+import { useUsdtTransfer } from "./hooks/useUsdtTransfer";
+import {
+  createRpcProvider,
+  formatEth,
+  formatGwei,
+  type RpcSource,
+} from "./lib/ethers";
 
 const shortenAddress = (value?: string) =>
   value ? `${value.slice(0, 6)}...${value.slice(-4)}` : "";
 
+const DATA_LOGGER_ABI = [
+  "function log(string memo, bytes32 dataId)",
+  "event DataLogged(address indexed sender, string memo, bytes32 indexed dataId, uint256 timestamp)",
+];
+
+const txHashPattern = /^0x([a-fA-F0-9]{64})$/;
+
 function App() {
-  const [account, setAccount] = useState<string>();
-  const [addressInput, setAddressInput] = useState("");
+  const chainId = useChainId();
+  const [rpcSource, setRpcSource] = useState<RpcSource>("alchemy");
+  const rpcProvider = useMemo<JsonRpcProvider>(
+    () => createRpcProvider(rpcSource, chainId),
+    [rpcSource, chainId],
+  );
+
+  const { address, isConnected } = useAccount();
+  const { connect, connectors, error: wagmiError, isPending: connecting } =
+    useConnect();
+  const { disconnect } = useDisconnect();
+
   const [connectError, setConnectError] = useState<string>();
+  const [addressInput, setAddressInput] = useState("");
   const [txHashInput, setTxHashInput] = useState("");
+  const [usdtHashInput, setUsdtHashInput] = useState("");
+  const [logMemo, setLogMemo] = useState("Hello from Sepolia testnet");
+  const [logCustomId, setLogCustomId] = useState("");
+  const loggerAddress =
+    (import.meta.env.VITE_DATA_LOGGER_ADDRESS as string | undefined)?.trim();
+
+  useEffect(() => {
+    if (address) setAddressInput(address);
+  }, [address]);
 
   const normalizedInput = addressInput.trim();
-  const targetAddress = normalizedInput || account;
+  const targetAddress = normalizedInput || address;
   const normalizedTxHash = txHashInput.trim();
-  const txHashPattern = /^0x([a-fA-F0-9]{64})$/;
   const activeTxHash = txHashPattern.test(normalizedTxHash)
     ? normalizedTxHash
     : undefined;
+  const normalizedUsdtHash = usdtHashInput.trim();
+  const activeUsdtHash = txHashPattern.test(normalizedUsdtHash)
+    ? normalizedUsdtHash
+    : undefined;
 
   const { blockNumber, balance, feeData, network, loading, error, refresh } =
-    useChainData(targetAddress);
+    useChainData(rpcProvider, targetAddress);
   const {
     transaction,
     receipt,
     loading: txLoading,
     error: txError,
     refresh: refreshTx,
-  } = useTransactionDetails(activeTxHash);
+  } = useTransactionDetails(rpcProvider, activeTxHash);
+  const {
+    details: usdtDetails,
+    loading: usdtLoading,
+    error: usdtError,
+  } = useUsdtTransfer(rpcProvider, activeUsdtHash);
 
-  const handleConnect = async () => {
-    try {
-      setConnectError(undefined);
-      const provider = injectedProvider();
-      const [selected] = await provider.send("eth_requestAccounts", []);
-      if (!selected) throw new Error("未选择任何账户");
-      const normalized = ethers.getAddress(selected);
-      setAccount(normalized);
-      setAddressInput(normalized);
-    } catch (err) {
-      setConnectError((err as Error).message);
+  const { writeContract, data: logTxHash, isPending: logPending, error: logError } =
+    useWriteContract();
+  const { isLoading: logConfirming, isSuccess: logConfirmed } =
+    useWaitForTransactionReceipt({ hash: logTxHash });
+
+  const dataIdForCall = useMemo(() => {
+    const manual = logCustomId.trim();
+    if (manual && manual.startsWith("0x") && manual.length === 66) {
+      return manual as `0x${string}`;
     }
-  };
-
-  const submitAddress = (event: FormEvent) => {
-    event.preventDefault();
-    refresh();
-  };
-
-  const submitTxHash = (event: FormEvent) => {
-    event.preventDefault();
-    if (!activeTxHash) return;
-    refreshTx();
-  };
+    return ethers.id(manual || logMemo || "logger");
+  }, [logCustomId, logMemo]);
 
   const formattedBalance = useMemo(() => {
     if (!balance) return "—";
@@ -88,21 +125,96 @@ function App() {
       ? `${formatEth(gasUsed * gasPriceForTx)} ETH`
       : "—";
 
+  const submitAddress = (event: FormEvent) => {
+    event.preventDefault();
+    refresh();
+  };
+
+  const submitTxHash = (event: FormEvent) => {
+    event.preventDefault();
+    if (!activeTxHash) return;
+    refreshTx();
+  };
+
+  const submitUsdtHash = (event: FormEvent) => {
+    event.preventDefault();
+    // hook reacts to hash change
+  };
+
+  const handleConnect = () => {
+    setConnectError(undefined);
+    const connector = connectors[0];
+    if (!connector) {
+      setConnectError("未找到可用的浏览器钱包连接器");
+      return;
+    }
+    connect({ connector });
+  };
+
+  const handleLogWrite = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!loggerAddress) {
+      setConnectError("请在 .env 设置 VITE_DATA_LOGGER_ADDRESS (测试网)");
+      return;
+    }
+    try {
+      await writeContract({
+        address: loggerAddress as `0x${string}`,
+        abi: DATA_LOGGER_ABI,
+        functionName: "log",
+        args: [logMemo, dataIdForCall],
+      });
+    } catch (err) {
+      setConnectError((err as Error).message);
+    }
+  };
+
   return (
     <main className="app">
       <section className="panel">
         <header>
-          <p className="eyebrow">React + Ether.js</p>
-          <h1>链上数据看板</h1>
+          <p className="eyebrow">Infura / Alchemy · wagmi</p>
+          <h1>链上数据与交互面板</h1>
           <p className="lead">
-            连接钱包或粘贴任意地址，即可实时读取区块高度、Gas 价格与账户余额。
+            左侧数据源切换 Alchemy / Infura，使用 wagmi 连接钱包，支持读取区块、交易、USDT
+            转账以及向测试网合约写入日志。
           </p>
         </header>
 
         <div className="actions">
-          <button type="button" onClick={handleConnect}>
-            {account ? `已连接 ${shortenAddress(account)}` : "连接钱包"}
-          </button>
+          <div className="pill">
+            <span className="label">数据源</span>
+            <div className="segmented">
+              {(["alchemy", "infura"] as RpcSource[]).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={option === rpcSource ? "active" : "ghost"}
+                  onClick={() => setRpcSource(option)}
+                >
+                  {option === "alchemy" ? "Alchemy" : "Infura"}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pill">
+            <span className="label">钱包</span>
+            <div className="segmented">
+              <button
+                type="button"
+                onClick={() => (isConnected ? disconnect() : handleConnect())}
+                disabled={connecting}
+              >
+                {isConnected
+                  ? `断开 ${shortenAddress(address)}`
+                  : connecting
+                  ? "连接中…"
+                  : "连接钱包 (wagmi)"}
+              </button>
+            </div>
+          </div>
+
           <button
             type="button"
             className="ghost"
@@ -112,7 +224,9 @@ function App() {
             {loading ? "同步中…" : "刷新"}
           </button>
         </div>
-        {connectError && <p className="error">{connectError}</p>}
+        {(connectError || wagmiError) && (
+          <p className="error">{connectError || wagmiError?.message}</p>
+        )}
 
         <form className="field" onSubmit={submitAddress}>
           <label htmlFor="address">读取地址</label>
@@ -141,6 +255,7 @@ function App() {
                 ? `${network.name} (#${network.chainId.toString()})`
                 : "—"}
             </strong>
+            <small className="hint">当前 RPC：{rpcSource}</small>
           </li>
           <li>
             <span className="label">最新区块</span>
@@ -242,6 +357,102 @@ function App() {
               </li>
             </ul>
           )}
+        </div>
+
+        <div className="section">
+          <h2>USDT 转账回显</h2>
+          <p className="lead small">
+            通过转 U 的交易哈希，解析 USDT 合约地址、链 ID / 区块号与转账金额。
+          </p>
+          <form className="field block" onSubmit={submitUsdtHash}>
+            <label htmlFor="usdtHash">USDT Tx Hash</label>
+            <input
+              id="usdtHash"
+              spellCheck={false}
+              placeholder="0x..."
+              value={usdtHashInput}
+              onChange={(event) => setUsdtHashInput(event.target.value)}
+            />
+            <button type="submit" className="ghost" disabled={!activeUsdtHash}>
+              解析
+            </button>
+          </form>
+          {usdtHashInput && !activeUsdtHash && (
+            <p className="error">请输入有效的交易哈希</p>
+          )}
+          {usdtError && <p className="error">{usdtError}</p>}
+          {usdtLoading && <p className="muted">正在读取 USDT 交易…</p>}
+          {usdtDetails && !usdtError && (
+            <ul className="tx-grid">
+              <li>
+                <span className="label">USDT 合约</span>
+                <strong className="mono" title={usdtDetails.tokenAddress}>
+                  {shortenAddress(usdtDetails.tokenAddress)}
+                </strong>
+              </li>
+              <li>
+                <span className="label">链 ID</span>
+                <strong>{usdtDetails.chainId ?? "—"}</strong>
+                <small className="hint">区块：{usdtDetails.blockNumber ?? "—"}</small>
+              </li>
+              <li>
+                <span className="label">金额</span>
+                <strong>
+                  {usdtDetails.amountFormatted} {usdtDetails.symbol} (
+                  {usdtDetails.decimals} dec)
+                </strong>
+              </li>
+              <li>
+                <span className="label">From</span>
+                <strong className="mono" title={usdtDetails.from}>
+                  {shortenAddress(usdtDetails.from)}
+                </strong>
+              </li>
+              <li>
+                <span className="label">To</span>
+                <strong className="mono" title={usdtDetails.to}>
+                  {shortenAddress(usdtDetails.to)}
+                </strong>
+              </li>
+            </ul>
+          )}
+        </div>
+
+        <div className="section">
+          <h2>写入链上日志 (测试网)</h2>
+          <p className="lead small">
+            已提供 DataLogger.sol 合约，部署到测试链后在 .env 配置
+            VITE_DATA_LOGGER_ADDRESS，连接钱包即可通过事件写入链上。
+          </p>
+          <form className="field block" onSubmit={handleLogWrite}>
+            <label htmlFor="logMemo">日志内容</label>
+            <input
+              id="logMemo"
+              spellCheck={false}
+              value={logMemo}
+              onChange={(event) => setLogMemo(event.target.value)}
+            />
+            <input
+              spellCheck={false}
+              placeholder="可选：自定义 bytes32 ID 或留空自动哈希"
+              value={logCustomId}
+              onChange={(event) => setLogCustomId(event.target.value)}
+            />
+            <button type="submit" disabled={logPending || logConfirming}>
+              {logPending ? "发送中…" : logConfirming ? "确认中…" : "写入日志"}
+            </button>
+          </form>
+          <p className="muted">调用数据 ID：{dataIdForCall}</p>
+          {loggerAddress ? (
+            <p className="muted">合约地址：{loggerAddress}</p>
+          ) : (
+            <p className="error">未配置 VITE_DATA_LOGGER_ADDRESS</p>
+          )}
+          {logError && <p className="error">{logError.message}</p>}
+          {logTxHash && (
+            <p className="muted">已广播交易：{shortenAddress(logTxHash)}</p>
+          )}
+          {logConfirmed && <p className="muted">日志交易已上链 ✅</p>}
         </div>
       </section>
     </main>

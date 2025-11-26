@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-
-import { rpcProvider } from "../lib/ethers";
+import type { JsonRpcProvider } from "ethers";
 
 type FeeInfo = {
   gasPrice?: bigint;
@@ -13,7 +12,7 @@ type NetworkInfo = {
   chainId: bigint;
 };
 
-export const useChainData = (address?: string) => {
+export const useChainData = (provider?: JsonRpcProvider, address?: string) => {
   const [blockNumber, setBlockNumber] = useState<bigint>();
   const [balance, setBalance] = useState<bigint>();
   const [feeData, setFeeData] = useState<FeeInfo>({});
@@ -29,14 +28,20 @@ export const useChainData = (address?: string) => {
       setLoading(true);
       setError(undefined);
 
+      if (!provider) {
+        setError("未配置 RPC 服务，无法读取链上数据");
+        setLoading(false);
+        return;
+      }
+
       try {
         const [latestBlock, providerFeeData, providerNetwork] = await Promise.all([
-          rpcProvider.getBlockNumber(),
-          rpcProvider.getFeeData(),
-          rpcProvider.getNetwork(),
+          provider.getBlockNumber(),
+          provider.getFeeData(),
+          provider.getNetwork(),
         ]);
         const fetchedBalance = address
-          ? await rpcProvider.getBalance(address)
+          ? await provider.getBalance(address)
           : undefined;
 
         if (cancelled) return;
@@ -69,7 +74,7 @@ export const useChainData = (address?: string) => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [address, refreshIndex]);
+  }, [provider, address, refreshIndex]);
 
   const refresh = () => setRefreshIndex((idx) => idx + 1);
 

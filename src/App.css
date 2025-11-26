@@ -39,6 +39,30 @@ header {
   margin-bottom: 1rem;
 }
 
+.pill {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.55rem 0.8rem;
+  border-radius: 16px;
+  background: rgba(148, 163, 184, 0.15);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.segmented {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.segmented button {
+  padding: 0.6rem 1.2rem;
+}
+
+button.active {
+  background: #38bdf8;
+  color: #0f172a;
+}
+
 button {
   border: none;
   border-radius: 999px;

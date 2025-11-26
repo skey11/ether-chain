@@ -1,9 +1,14 @@
 import { useEffect, useState } from "react";
-import type { TransactionReceipt, TransactionResponse } from "ethers";
+import type {
+  JsonRpcProvider,
+  TransactionReceipt,
+  TransactionResponse,
+} from "ethers";
 
-import { rpcProvider } from "../lib/ethers";
-
-export const useTransactionDetails = (hash?: string) => {
+export const useTransactionDetails = (
+  provider?: JsonRpcProvider,
+  hash?: string,
+) => {
   const [transaction, setTransaction] = useState<TransactionResponse | null>();
   const [receipt, setReceipt] = useState<TransactionReceipt | null>();
   const [loading, setLoading] = useState(false);
@@ -24,10 +29,16 @@ export const useTransactionDetails = (hash?: string) => {
       setLoading(true);
       setError(undefined);
 
+      if (!provider) {
+        setError("未配置 RPC 服务，无法查询交易");
+        setLoading(false);
+        return;
+      }
+
       try {
         const [tx, txReceipt] = await Promise.all([
-          rpcProvider.getTransaction(hash),
-          rpcProvider.getTransactionReceipt(hash),
+          provider.getTransaction(hash),
+          provider.getTransactionReceipt(hash),
         ]);
 
         if (cancelled) return;
@@ -53,7 +64,7 @@ export const useTransactionDetails = (hash?: string) => {
     return () => {
       cancelled = true;
     };
-  }, [hash, refreshIndex]);
+  }, [provider, hash, refreshIndex]);
 
   const refresh = () => setRefreshIndex((idx) => idx + 1);
 
